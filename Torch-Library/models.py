@@ -152,6 +152,12 @@ class Text_Embedder(nn.Module):
         self.token_embedding = nn.Embedding(vocab_size, width)
         self.project = nn.Parameter(torch.empty(width, output_dim))
 
+        nn.init.normal_(self.token_embedding.weight, std=0.02)
+        nn.init.normal_(self.pos_embed, std=0.01)
+
+
+        if self.project is not None:
+            nn.init.normal_(self.project, std=width**-0.5)
 
 
 
@@ -189,7 +195,7 @@ class Minimal_VLM(nn.Module):
         
         self.context_length = context_length
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-        
+        self.transformer_width = transformer_width
     
         self.vision_transformer = Image_Embedder(
                                     img_size = img_size, 
@@ -210,6 +216,7 @@ class Minimal_VLM(nn.Module):
                                 )
 
 
+
     ### Need overall VLM functions for forward() and initialization
     def forward(self, images, text):
         image_features = self.vision_transformer(images.type(self.weight_type))
@@ -227,6 +234,20 @@ class Minimal_VLM(nn.Module):
         # shape = [global_batch_size, global_batch_size]
         return logits_per_image, logits_per_text
 
+
+
+
+
+    def initialize_parameters(self):
+
+        proj_std = (self.transformer_width**-0.5) * ((2 * self.transformer_width)**-0.5)
+        attn_std = self.transformer_width**-0.5
+        fc_std = (2 * self.transformer_width)**-0.5
+        for block in self.text_transformer.resblocks:
+            nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
+            nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
+            nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
+            nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
 
 
 
