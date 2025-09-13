@@ -152,14 +152,7 @@ class Text_Embedder(nn.Module):
         self.token_embedding = nn.Embedding(vocab_size, width)
         self.project = nn.Parameter(torch.empty(width, output_dim))
 
-        nn.init.normal_(self.token_embedding.weight, std=0.02)
-        nn.init.normal_(self.pos_embed, std=0.01)
-
-
-        if self.project is not None:
-            nn.init.normal_(self.project, std=width**-0.5)
-
-
+        self.initialize_parameters(width)
 
 
     def forward(self, text):
@@ -179,6 +172,23 @@ class Text_Embedder(nn.Module):
 
         return x
 
+
+
+    def initialize_parameters(self, width):
+        nn.init.normal_(self.token_embedding.weight, std=0.02)
+        nn.init.normal_(self.pos_embed, std=0.01)
+        if self.project is not None:
+            nn.init.normal_(self.project, std=width**-0.5)
+
+
+        proj_std = (width**-0.5) * ((2 * width)**-0.5)
+        attn_std = width**-0.5
+        fc_std = (2 * width)**-0.5
+        for block in self.resblocks:
+            nn.init.normal_(block.mha.in_proj_weight, std=attn_std)
+            nn.init.normal_(block.mha.out_proj.weight, std=proj_std)
+            nn.init.normal_(block.ff.linear_up.weight, std=fc_std)
+            nn.init.normal_(block.ff.linear_down.weight, std=proj_std)
 
 
 
@@ -236,18 +246,6 @@ class Minimal_VLM(nn.Module):
 
 
 
-
-
-    def initialize_parameters(self):
-
-        proj_std = (self.transformer_width**-0.5) * ((2 * self.transformer_width)**-0.5)
-        attn_std = self.transformer_width**-0.5
-        fc_std = (2 * self.transformer_width)**-0.5
-        for block in self.text_transformer.resblocks:
-            nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
-            nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
-            nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
-            nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
 
 
 
