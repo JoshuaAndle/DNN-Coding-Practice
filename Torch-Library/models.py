@@ -29,8 +29,8 @@ class Conv2d_Custom(nn.Conv2d):
 class MultiHead_Attention_Custom(nn.MultiheadAttention):
     def __init__(self, d_in, n_heads):
         super().__init__(d_in, n_heads)
-    def forward(self, x):
-        return super().forward(x)
+    def forward(self, q, k, v, need_weights, attn_mask):
+        return super().forward(q, k, v, need_weights=need_weights, attn_mask=attn_mask)
 
 
 ### Need layernorm 
@@ -86,7 +86,7 @@ class ResidualAttentionBlock(nn.Module):
     def forward(self, x):
         x = x + self.masked_attention(self.ln_1(x))
         x = x + self.ff(self.ln_2(x))
-
+        return x
 
 
 ### Wanted to try handle embedding differently from using a wrapper around Transformer_Branch like CLIP would
@@ -109,7 +109,7 @@ class Image_Embedder(nn.Module):
 
 
     def forward(self,x):
-        self.conv(x)
+        x = self.conv(x)
         
         x = x.reshape(x.shape[0], self.n_filters, -1)  ### Flatten feature maps
         x = x.permute(0,2,1)                             ### Swap n_filters and n_patches
@@ -139,9 +139,10 @@ class Image_Embedder(nn.Module):
 
 #!# Making dedicated text embedder class to make the code more symmetric between modalities
 class Text_Embedder(nn.Module):
-    def __init__(self, vocab_size, context_length, width, output_dim, attn_mask, layers=1):
+    def __init__(self, vocab_size, context_length, width, output_dim, attn_mask, dtype, layers=1):
         super().__init__()
         self.context_length = context_length
+        self.weight_type = dtype
         
         self.ln_pre = LayerNorm_Custom(width)
         self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, width//64, attn_mask) for _ in range(layers)])
@@ -155,9 +156,9 @@ class Text_Embedder(nn.Module):
 
 
 
-    def forward(self, x):
-        x = self.token_embedding(x).type(self.dtype)  # [batch_size, n_ctx, d_model]
-        x = x + self.pos_embed().type(self.dtype)
+    def forward(self, text):
+        x = self.token_embedding(text).type(self.weight_type)  # [batch_size, n_ctx, d_model]
+        x = x + self.pos_embed
 
         
         x = x.permute(1, 0, 2)  # NLD -> LND
@@ -165,7 +166,7 @@ class Text_Embedder(nn.Module):
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         ### Normalize the class embedding token
-        x = self.ln_post(x).type(self.dtype) #[batch_size, n_ctx, transformer.width]
+        x = self.ln_post(x).type(self.weight_type) #[batch_size, n_ctx, transformer.width]
 
         # take features from the eot embedding (eot_token is the highest number in each sequence)
         x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.project
@@ -188,28 +189,31 @@ class Minimal_VLM(nn.Module):
         
         self.context_length = context_length
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-
+        
+    
         self.vision_transformer = Image_Embedder(
                                     img_size = img_size, 
                                     patch_size = patch_size, 
                                     width = vision_width, 
                                     output_dim = output_dim
                                 )
+                                
+        self.weight_type = self.vision_transformer.conv.weight.dtype
+
         self.text_transformer = Text_Embedder(
                                     vocab_size = vocab_size, 
                                     context_length = context_length, 
                                     width = transformer_width,
                                     output_dim = output_dim, 
-                                    attn_mask = self.build_attention_mask()
+                                    attn_mask = self.build_attention_mask(),
+                                    dtype=self.weight_type
                                 )
-
-
 
 
     ### Need overall VLM functions for forward() and initialization
     def forward(self, images, text):
-        image_features = self.vision_transformer(images.type(self.dtype))
-        text_features = self.text_transformer(text.type(self.dtype))
+        image_features = self.vision_transformer(images.type(self.weight_type))
+        text_features = self.text_transformer(text)
 
         # normalized features
         image_features = image_features / image_features.norm(dim=1, keepdim=True)
