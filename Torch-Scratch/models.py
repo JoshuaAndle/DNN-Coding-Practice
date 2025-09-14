@@ -24,6 +24,22 @@ import utils
 #     def forward(self, x):
 #         return super().forward(x)
 
+
+
+
+# ### Need layernorm 
+# class LayerNorm_Custom(nn.LayerNorm):
+#     def __init__(self, width):
+#         super().__init__(width)
+#     def forward(self, x):
+#         return super().forward(x)
+
+
+
+
+
+
+
 ### Custom linear layer built off of pytorch's nn.module
 class Linear_Custom(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -57,23 +73,50 @@ class Conv2d_Custom(nn.Module):
         return  x
 
 
+
+### Need layernorm 
+class LayerNorm_Custom(nn.Module):
+    def __init__(self, shape, affine=True, elementwise_affine=True, eps=1e-5):
+        super().__init__()
+        if affine and elementwise_affine:
+            self.gamma = nn.Parameter(torch.ones(shape))
+            self.beta = nn.Parameter(torch.zeros(shape))
+        elif affine:
+            self.gamma = nn.Parameter(torch.ones(1))
+            self.beta = nn.Parameter(torch.zeros(1))
+        else:
+            self.gamma, self.beta = None, None
+        self.eps = eps
+
+
+    def forward(self, x):
+        if len(x.shape) > 4: #If norm of feature maps
+            x_mean = x.mean(dim=(-3,-2,-1), keepdim=True)
+            x_var = x.var(dim=(-3,-2,-1), keepdim=True, unbiased=False)
+        
+        else:
+            # print("x shape in layernorm: ", x.shape, flush=True)
+            x_mean = x.mean(dim=-1, keepdim=True)
+            x_var = x.var(dim=-1, keepdim=True, unbiased=False)
+        x = x - x_mean
+        x = x / (x_var + self.eps)**0.5
+        if self.gamma is not None:
+            x = x * self.gamma + self.beta
+        return x
+
+
+
+
+
+
+
+
 ### Need to implement MHA layer
 class MultiHead_Attention_Custom(nn.MultiheadAttention):
     def __init__(self, d_in, n_heads):
         super().__init__(d_in, n_heads)
     def forward(self, q, k, v, need_weights, attn_mask):
         return super().forward(q, k, v, need_weights=need_weights, attn_mask=attn_mask)
-
-
-### Need layernorm 
-class LayerNorm_Custom(nn.LayerNorm):
-    def __init__(self, width):
-        super().__init__(width)
-    def forward(self, x):
-        return super().forward(x)
-
-
-
 
 
 
@@ -88,11 +131,11 @@ class FeedForward(nn.Module):
         super().__init__()
         self.linear_up = Linear_Custom(width, width * 2)
         ### Using ReLU over GELU for practice since its going to be easier to remember how to implement from scratch
-        self.activation = nn.ReLU()
+        # self.activation = utils.custom_ReLU
         self.linear_down = Linear_Custom(width * 2, width)
 
     def forward(self, x):
-        x = self.activation(self.linear_up(x))
+        x = utils.custom_ReLU(self.linear_up(x))
         x = self.linear_down(x)
         return x
 

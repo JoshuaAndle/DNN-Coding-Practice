@@ -114,9 +114,9 @@ def main():
     
     class_prompts = [prompt.format(x) for x in class_names]
     
-    print(class_prompts)
+    # print(class_prompts)
     label_tokens = tokenize(tokenizer, class_prompts, context_length=context_length).to(device)
-    print(label_tokens)
+    # print(label_tokens)
 
 
     ### Set up optimizer
