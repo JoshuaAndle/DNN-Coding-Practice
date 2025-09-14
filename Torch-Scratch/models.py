@@ -5,24 +5,56 @@ from torch import nn
 import torchvision
 import numpy as np
 
+import utils
 
 
 #!# Wrapper classes of nn modules, to be coded from scratch in Torch-Scratch directory version
 
-### Need layernorm 
-class Linear_Custom(nn.Linear):
+# ### Need linear 
+# class Linear_Custom(nn.Linear):
+#     def __init__(self, in_channels, out_channels):
+#         super().__init__(in_channels, out_channels)
+#     def forward(self, x):
+#         return super().forward(x)
+
+# ### Need conv2d
+# class Conv2d_Custom(nn.Conv2d):
+#     def __init__(self, in_channels, out_channels, kernel_size, stride, bias=False):
+#         super().__init__(in_channels, out_channels, kernel_size, stride, bias=bias)
+#     def forward(self, x):
+#         return super().forward(x)
+
+### Custom linear layer built off of pytorch's nn.module
+class Linear_Custom(nn.Module):
     def __init__(self, in_channels, out_channels):
-        super().__init__(in_channels, out_channels)
+        super().__init__()
+        self.weight = nn.Parameter(torch.rand(in_channels, out_channels))
+        self.bias = nn.Parameter(torch.rand(out_channels))
+
     def forward(self, x):
-        return super().forward(x)
+        return x @ self.weight + self.bias
 
 
-### Need layernorm 
-class Conv2d_Custom(nn.Conv2d):
+### Need conv2d 
+class Conv2d_Custom(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride, bias=False):
-        super().__init__(in_channels, out_channels, kernel_size, stride, bias=bias)
+        super().__init__()
+        self.in_channels = in_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.weight = nn.Parameter(torch.rand(out_channels,in_channels,kernel_size,kernel_size))
+        self.bias = nn.Parameter(torch.rand(out_channels))
     def forward(self, x):
-        return super().forward(x)
+        ### Not vectorized for now
+        x = utils.custom_unfold(x, self.kernel_size, self.stride, flatten=False)
+        x = x.unsqueeze(1)
+        exp_filters = self.weight.unsqueeze(0).unsqueeze(3)
+        # print("batch shape: {}, filters shape: {}".format(x.shape, exp_filters.shape))
+        x = x * exp_filters
+        ### Sum over patches and channels
+        x = x.sum((-2,-1)).sum(2)
+        # print("Output shape: ", x.shape)
+        return  x
 
 
 ### Need to implement MHA layer
