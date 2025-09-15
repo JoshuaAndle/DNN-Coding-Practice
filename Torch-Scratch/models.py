@@ -1,9 +1,12 @@
 #!# Much of this model's code is based off of CLIP https://github.com/openai/CLIP/tree/main
 ### Aim is to make a minimal VLM and then re-implement it from scratch in Pytorch in Torch-Scratch directory
+import math
 import torch
 from torch import nn
+import torch.nn.functional as F
 import torchvision
 import numpy as np
+
 
 import utils
 
@@ -37,6 +40,16 @@ import utils
 
 
 
+# ### Need to implement MHA layer
+# class MultiHead_Attention_Custom(nn.MultiheadAttention):
+#     def __init__(self, d_in, n_heads):
+#         super().__init__(d_in, n_heads)
+#     def forward(self, q, k, v, need_weights, attn_mask):
+#         return super().forward(q, k, v, need_weights=need_weights, attn_mask=attn_mask)
+
+
+
+
 
 
 
@@ -65,11 +78,9 @@ class Conv2d_Custom(nn.Module):
         x = utils.custom_unfold(x, self.kernel_size, self.stride, flatten=False)
         x = x.unsqueeze(1)
         exp_filters = self.weight.unsqueeze(0).unsqueeze(3)
-        # print("batch shape: {}, filters shape: {}".format(x.shape, exp_filters.shape))
         x = x * exp_filters
         ### Sum over patches and channels
         x = x.sum((-2,-1)).sum(2)
-        # print("Output shape: ", x.shape)
         return  x
 
 
@@ -111,12 +122,79 @@ class LayerNorm_Custom(nn.Module):
 
 
 
-### Need to implement MHA layer
-class MultiHead_Attention_Custom(nn.MultiheadAttention):
+### Assuming equal k,v,q dimensions for simplicity
+class MultiHead_Attention_Custom(nn.Module):
     def __init__(self, d_in, n_heads):
-        super().__init__(d_in, n_heads)
+        super().__init__()
+        self.in_project = nn.Parameter(torch.rand((3*d_in, d_in)))
+        self.out_project = nn.Parameter(torch.rand((d_in, d_in)))
+        self.d_in = d_in
+        self.n_heads = n_heads
+        self.d_head = d_in // n_heads
+        #!# Check resulting size of d_head
+
     def forward(self, q, k, v, need_weights, attn_mask):
-        return super().forward(q, k, v, need_weights=need_weights, attn_mask=attn_mask)
+
+        ### Self attention
+        if q is k and k is v:
+            ### [B,T,d_in] --> [B,T,3*d_in]
+            x = q @ self.in_project.transpose(0,1)
+
+            ### [B,T,3*d_in] --> [B,T,3*n_heads,3*d_head] --> [B,3*n_heads,T,3*d_head]
+            x = x.reshape(x.shape[0], x.shape[1], 3*self.n_heads, -1).transpose(1,2)
+
+            ### [B,3*n_heads,T,3*d_head] --> [B,n_heads,T,d_head]
+            q = x[:,:self.n_heads,:,:]
+            k = x[:,self.n_heads:(2*self.n_heads),:,:]
+            v = x[:,(2*self.n_heads):,:,:]
+
+            # print("Shapes of x,q,k,v: {}, {}, {}, {}".format(x.shape,q.shape,k.shape,v.shape,))
+        ### Cross attention
+        else:
+            ### Use only the portion of in_project that correspond to each input
+            ### [B,T,d_in] --> [B,T,3*d_in]
+            q = F.linear(q,  self.in_project.weight[:self.d_in, :], self.in_project.bias[:self.d_in, :]) 
+            k = F.linear(k,  self.in_project.weight[self.d_in:2*self.d_in, :], self.in_project.bias[self.d_in:2*self.d_in, :])
+            v = F.linear(v,  self.in_project.weight[2*self.d_in:, :], self.in_project.bias[2*self.d_in:, :])
+
+            ### [B,T,d_in] --> [B,T,n_heads,d_head] --> [B,n_heads,T,d_head]
+            q = q.reshape(q.shape[0], q.shape[1], self.n_heads, -1).transpose(1,2)
+            k = k.reshape(k.shape[0], k.shape[1], self.n_heads, -1).transpose(1,2)
+            v = v.reshape(v.shape[0], v.shape[1], self.n_heads, -1).transpose(1,2)
+
+
+        ### [B,n_heads,T,d_head] @ [B,n_heads,d_head,T] --> [B,n_heads,T,T]  
+        attn = torch.matmul(q, k.transpose(-2,-1))
+        scaled_attn = attn/math.sqrt(self.d_head)
+
+        if attn_mask != None:
+            masked_attn = scaled_attn + attn_mask
+        else:
+            masked_attn = scaled_attn
+
+        ### Get softmax within the attentions for each given token
+        scaled_attn = F.softmax(masked_attn, dim=-1) 
+
+        ### Apply the value weights to translate the attentions for each token into an embedding
+        out = torch.matmul(scaled_attn, v)
+
+        ### Concatenate heads back together
+        ### [B,n_heads,T,d_head] --> [B,T,n_heads,d_head] --> [B,T,d_in]
+        out = out.transpose(1,2)
+        out = out.reshape(out.shape[0], out.shape[1], -1)
+
+        out = torch.matmul(out, self.out_project)
+
+        if need_weights:
+            return out, scaled_attn
+        return out, None
+
+
+
+
+
+
+
 
 
 
@@ -195,9 +273,9 @@ class Image_Embedder(nn.Module):
         x = self.ln_pre(x)
 
 
-        x = x.permute(1,0,2) ### NLD -> LND
+        # x = x.permute(1,0,2) ### NLD -> LND
         x = self.resblocks(x)
-        x = x.permute(1,0,2) ### LND -> NLD 
+        # x = x.permute(1,0,2) ### LND -> NLD 
 
         ### Normalize the class embedding token
         x = self.ln_post(x[:,0,:])
@@ -235,9 +313,9 @@ class Text_Embedder(nn.Module):
         x = x + self.pos_embed
 
         
-        x = x.permute(1, 0, 2)  # NLD -> LND
+        # x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.resblocks(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
+        # x = x.permute(1, 0, 2)  # LND -> NLD
 
         ### Normalize the class embedding token
         x = self.ln_post(x).type(self.weight_type) #[batch_size, n_ctx, transformer.width]
@@ -260,8 +338,10 @@ class Text_Embedder(nn.Module):
         attn_std = width**-0.5
         fc_std = (2 * width)**-0.5
         for block in self.resblocks:
-            nn.init.normal_(block.mha.in_proj_weight, std=attn_std)
-            nn.init.normal_(block.mha.out_proj.weight, std=proj_std)
+            # nn.init.normal_(block.mha.in_proj_weight, std=attn_std)
+            # nn.init.normal_(block.mha.out_proj.weight, std=proj_std)
+            nn.init.normal_(block.mha.in_project, std=attn_std)
+            nn.init.normal_(block.mha.out_project, std=proj_std)
             nn.init.normal_(block.ff.linear_up.weight, std=fc_std)
             nn.init.normal_(block.ff.linear_down.weight, std=proj_std)
 
@@ -334,6 +414,20 @@ class Minimal_VLM(nn.Module):
         mask.fill_(float("-inf"))
         mask.triu_(1)  # zero out the lower diagonal
         return mask
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
